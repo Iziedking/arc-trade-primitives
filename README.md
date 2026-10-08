@@ -1,25 +1,103 @@
 # Arc trade primitives
 
-Two money primitives for [Arc](https://developers.circle.com/arc), pulled out of a
-working trade-finance product and cut down to the parts worth forking.
+[![CI](https://github.com/Iziedking/arc-trade-primitives/actions/workflows/ci.yml/badge.svg)](https://github.com/Iziedking/arc-trade-primitives/actions/workflows/ci.yml)
 
-Both are abstract contracts. Inherit one, wire two or three hooks to your own
-roles, and you are done. Neither assumes anything about the rest of your system.
+Contracts for trading safely with strangers on [Arc](https://developers.circle.com/arc),
+taken from [Karwan](https://github.com/Iziedking/Karwan) and cut down to the
+parts worth forking.
 
-| | What it gives you |
-|---|---|
-| [`AssignablePayouts`](src/assignment/AssignablePayouts.sol) | Sell a payee's future settlement to a financier. The escrow pays them first, so non-recourse financing works without trusting the payee to hand the money over. |
-| [`USYCYieldVault`](src/usyc/USYCYieldVault.sol) | Park idle USDC in USYC so your float earns T-bill yield, with a liquid buffer, guarded oracle reads, and yield measured honestly. |
+Two people who have never met need three things before money moves between
+them: a way to know who they are dealing with, a way to pay that protects both
+sides, and, as a track record builds, access to working capital against the
+deals they win. Each contract here covers one of those, and none assumes
+anything about the rest of your system.
+
+| | What it gives you | Status |
+|---|---|---|
+| [`KarwanBusinessRegistry`](src/verification/KarwanBusinessRegistry.sol) | A tamper-evident record of who applied to trade as a verified business, which document they anchored, and who reviewed it. | **Live on Arc mainnet** |
+| [`AssignablePayouts`](src/assignment/AssignablePayouts.sol) | Sell a payee's future settlement to a financier. The escrow pays them first, so non-recourse financing works without trusting the payee to hand the money over. | Tested. The pattern runs in Karwan's testnet escrow |
+| [`USYCYieldVault`](src/usyc/USYCYieldVault.sol) | Park idle USDC in USYC so your float earns T-bill yield, with a liquid buffer, guarded oracle reads, and yield measured honestly. | Tested. The pattern runs in Karwan's testnet vaults |
 
 ```bash
-forge install OpenZeppelin/openzeppelin-contracts
-forge install foundry-rs/forge-std
+forge install OpenZeppelin/openzeppelin-contracts@v5.6.1 foundry-rs/forge-std@v1.16.1
 forge test
 ```
 
+## Deployments
+
+| Network | Contract | Address |
+|---|---|---|
+| Arc mainnet (5042) | `KarwanBusinessRegistry` | [`0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF`](https://explorer.arc.io/address/0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF) |
+
+A 2-of-3 Safe (`0x489C6367E2e943A3cC017589f73cAA8A80d7D028`) owns the registry
+and holds the reviewer role. The full record is in
+[`deployments/arc-mainnet.json`](deployments/arc-mainnet.json).
+
+Check that the code in this repo is the code running on mainnet:
+
+```bash
+bash script/verify-mainnet.sh
+# OK   KarwanBusinessRegistry at 0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF (2206 bytes)
+```
+
+The script builds with the settings the contract was deployed with (the
+`mainnet` profile in `foundry.toml`), reads the live bytecode, and compares the
+two with the trailing compiler metadata removed. That metadata fingerprints the
+build environment rather than the code, so it differs between repos; every
+byte the EVM executes must match. CI runs the same check on every push.
+
 ---
 
-## 1. Assignable payouts
+## 1. Business verification registry
+
+The problem: a buyer abroad cannot check whether the supplier they found in a
+chat is a registered business, and a platform that says "verified" usually
+offers nothing anyone can check later. The check happens once, in someone's
+database, and the record of who checked what is gone.
+
+`KarwanBusinessRegistry` keeps that record on chain. The applicant anchors the
+hash of their registration or tax document. A reviewer approves or rejects
+that exact document. Anyone can read the outcome.
+
+```solidity
+bytes32 doc = keccak256(registrationPdf);       // the document itself stays off chain
+registry.submitRegistration(doc);                // applicant
+
+registry.approve(applicant, doc);                // reviewer, naming the document they checked
+registry.isVerified(applicant);                  // anyone: true
+```
+
+What you get:
+
+- **The reviewer approves a document, not a wallet.** `approve` and `reject`
+  take the document hash the reviewer actually checked and revert with
+  `DocHashMismatch` if the applicant resubmitted in between. Without that, an
+  applicant who swaps the document while the review is in flight gets a
+  document nobody looked at marked verified.
+  [`KarwanBusinessRegistryReviewRace.t.sol`](test/KarwanBusinessRegistryReviewRace.t.sol)
+  keeps that race covered.
+- **Revocation without a redeploy.** A business that turns out to be
+  fraudulent, loses its licence, or was approved in error is moved from
+  Verified to Rejected by the reviewer. It can apply again afterwards.
+- **No personal data on chain.** Only the document hash and, on rejection or
+  revocation, the hash of the reason. The documents and reasons stay with
+  whoever ran the review.
+- **No funds, no allowlist.** The registry holds no money and needs no Circle
+  whitelist, so it can sit beside any escrow or marketplace that wants to gate
+  on `isVerified`.
+- **Explicit handover.** Ownership moves in two steps
+  (`transferOwnership`, then `acceptOwnership` by the new owner), and the
+  owner can rotate the reviewer.
+
+Statuses: `0` none, `1` submitted, `2` verified, `3` rejected.
+
+What it does not do: decide what counts as a valid business. The reviewer
+does that off chain. The contract makes the decision and its subject
+permanent and public.
+
+---
+
+## 2. Assignable payouts
 
 The problem: a financier advances a supplier cash against a deal that has not
 settled yet. When it does settle, the money lands in the supplier's wallet, and
@@ -72,7 +150,7 @@ usdc.safeTransferFrom(financier, payee, principal);   // same transaction
 
 That second rule is the expensive one. The escrow this came from shipped a
 financing contract that assigned at funding time but held the advance in its own
-custody until proof of delivery was anchored — and the ordinary settlement path
+custody until proof of delivery was anchored, and the ordinary settlement path
 never anchored proof of delivery. The default outcome was that the supplier
 delivered, received nothing, and the financier finished a full repay amount ahead
 having risked nothing. The primitive behaved correctly throughout; the defect was
@@ -91,7 +169,7 @@ a product.
 
 ---
 
-## 2. USYC yield vault
+## 3. USYC yield vault
 
 [USYC](https://developers.circle.com/tokenized/usyc) is a tokenised T-bill fund.
 Holding your idle float in it instead of raw USDC is close to free yield. Two
@@ -125,7 +203,7 @@ reporting $3,969.
 
 `costBasisUsdc` records what you actually paid; `accruedYield()` measures against
 it. Redemptions reduce the basis **proportionally to the shares sold**, not by
-the USDC received — reducing it by the proceeds books the gain into the basis and
+the USDC received. Reducing it by the proceeds books the gain into the basis and
 quietly zeroes the reported yield on whatever is left.
 
 If you hold USYC across several vaults or contract generations, sum the cost
@@ -146,17 +224,26 @@ wildly inflated number.
 - **`maxPriceAge` is settable**, so a frozen testnet oracle is a parameter change
   rather than a redeploy or a fake feed.
 
-`withdrawForYield` is a trusted role by construction — the operator holds the USDC
+`withdrawForYield` is a trusted role by construction: the operator holds the USDC
 until they return it. Use a multisig, and add a cap or rate limit in your subclass
 if the float is large.
 
 ---
 
+## How these fit together in Karwan
+
+Karwan lets your reputation travel with you, and lets your agent use that
+reputation to find, negotiate with, and transact with the right people. The
+order matters: verify first, then protect the payment, then let financing
+follow the record. A verified business with completed deals is one a
+financier can price, and `AssignablePayouts` is how that financing gets repaid
+out of the escrow rather than out of trust.
+
 ## What is deliberately not here
 
-The product these came from. No matching, no reputation, no disputes, no
-milestones, no fee logic, no frontend. Those are opinions about a business.
-These two files are not.
+The product these came from. No matching, no agents, no reputation scoring, no
+disputes, no milestones, no fee logic, no frontend. Those are opinions about a
+business. These files are not.
 
 ## License
 

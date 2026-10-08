@@ -20,3 +20,9 @@ bracket_spacing = false
 
 [rpc_endpoints]
 arc_testnet = "${ARC_TESTNET_RPC_URL}"
+
+# The settings Karwan deployed with on Arc mainnet. script/verify-mainnet.sh
+# builds under this profile and compares against the live contract.
+[profile.mainnet]
+optimizer_runs = 1
+via_ir = true

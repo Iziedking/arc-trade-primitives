@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - name: Install dependencies
+        run: forge install --no-git OpenZeppelin/openzeppelin-contracts@v5.6.1 foundry-rs/forge-std@v1.16.1
+      - name: Build
+        run: forge build --sizes
+      - name: Test
+        run: forge test -vv
+
+  mainnet-bytecode:
+    # The registry in this repo must be the code running on Arc mainnet.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - name: Install dependencies
+        run: forge install --no-git OpenZeppelin/openzeppelin-contracts@v5.6.1 foundry-rs/forge-std@v1.16.1
+      - name: Compare with Arc mainnet
+        run: bash script/verify-mainnet.sh
