@@ -4,12 +4,25 @@
   "contracts": {
     "KarwanBusinessRegistry": {
       "address": "0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF",
-      "block": 22658526,
+      "block": 22658560,
       "codehash": "0x576379622df310692c6b8d646de9939b54ed0401fa75e88058219a5d92bf18bb",
       "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
       "reviewer": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
       "ownerNote": "A 2-of-3 Safe owns the registry and is also the reviewer.",
-      "source": "https://github.com/Iziedking/Karwan/blob/main/contracts/src/KarwanBusinessRegistry.sol"
+      "source": "https://github.com/Iziedking/Karwan/blob/main/contracts/src/KarwanBusinessRegistry.sol",
+      "sourcify": "https://repo.sourcify.dev/5042/0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF"
+    },
+    "KarwanReputation": {
+      "address": "0xa8E41F941b44CA091E3Ab7b600fe1484838aE27D",
+      "block": 22658559,
+      "codehash": "0x8ab219b37a54ea2baf44a3d8dd0d1a06628bfac29537349f8d01a028ff8c39e4",
+      "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
+      "securityCouncil": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
+      "escrow": "0x0000000000000000000000000000000000000000",
+      "backfillLocked": true,
+      "ownerNote": "The same 2-of-3 Safe owns the record and is its security council. No escrow or recorder is wired yet, so nothing can write an outcome until the owner adds one.",
+      "source": "https://github.com/Iziedking/Karwan/blob/main/contracts/src/KarwanReputation.sol",
+      "sourcify": "https://repo.sourcify.dev/5042/0xa8E41F941b44CA091E3Ab7b600fe1484838aE27D"
     }
   }
 }

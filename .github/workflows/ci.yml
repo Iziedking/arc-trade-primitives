@@ -20,7 +20,7 @@ jobs:
         run: forge test -vv
 
   mainnet-bytecode:
-    # The registry in this repo must be the code running on Arc mainnet.
+    # Every contract in deployments/arc-mainnet.json must be the code running on Arc mainnet.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

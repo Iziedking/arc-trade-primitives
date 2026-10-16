@@ -6,15 +6,17 @@ Contracts for trading safely with strangers on [Arc](https://developers.circle.c
 taken from [Karwan](https://github.com/Iziedking/Karwan) and cut down to the
 parts worth forking.
 
-Two people who have never met need three things before money moves between
-them: a way to know who they are dealing with, a way to pay that protects both
-sides, and, as a track record builds, access to working capital against the
-deals they win. Each contract here covers one of those, and none assumes
-anything about the rest of your system.
+Two people who have never met need four things before money moves between
+them: a way to know who they are dealing with, a track record that neither
+side can edit, a way to pay that protects both sides, and, as the record
+builds, access to working capital against the deals they win. Each contract
+here covers one of those, and none assumes anything about the rest of your
+system.
 
 | | What it gives you | Status |
 |---|---|---|
 | [`KarwanBusinessRegistry`](src/verification/KarwanBusinessRegistry.sol) | A tamper-evident record of who applied to trade as a verified business, which document they anchored, and who reviewed it. | **Live on Arc mainnet** |
+| [`KarwanReputation`](src/reputation/KarwanReputation.sol) | A public record of how each party's deals ended, written only by the escrow that held the money, with settled value and distinct counterparties so volume with one friend does not look like a market. | **Live on Arc mainnet** |
 | [`AssignablePayouts`](src/assignment/AssignablePayouts.sol) | Sell a payee's future settlement to a financier. The escrow pays them first, so non-recourse financing works without trusting the payee to hand the money over. | Tested. The pattern runs in Karwan's testnet escrow |
 | [`USYCYieldVault`](src/usyc/USYCYieldVault.sol) | Park idle USDC in USYC so your float earns T-bill yield, with a liquid buffer, guarded oracle reads, and yield measured honestly. | Tested. The pattern runs in Karwan's testnet vaults |
 
@@ -25,12 +27,14 @@ forge test
 
 ## Deployments
 
-| Network | Contract | Address |
-|---|---|---|
-| Arc mainnet (5042) | `KarwanBusinessRegistry` | [`0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF`](https://explorer.arc.io/address/0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF) |
+| Network | Contract | Address | Verified source |
+|---|---|---|---|
+| Arc mainnet (5042) | `KarwanBusinessRegistry` | [`0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF`](https://explorer.arc.io/address/0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF) | [Sourcify, exact match](https://repo.sourcify.dev/5042/0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF) |
+| Arc mainnet (5042) | `KarwanReputation` | [`0xa8E41F941b44CA091E3Ab7b600fe1484838aE27D`](https://explorer.arc.io/address/0xa8E41F941b44CA091E3Ab7b600fe1484838aE27D) | [Sourcify, exact match](https://repo.sourcify.dev/5042/0xa8E41F941b44CA091E3Ab7b600fe1484838aE27D) |
 
-A 2-of-3 Safe (`0x489C6367E2e943A3cC017589f73cAA8A80d7D028`) owns the registry
-and holds the reviewer role. The full record is in
+A 2-of-3 Safe (`0x489C6367E2e943A3cC017589f73cAA8A80d7D028`) owns both
+contracts. It holds the reviewer role on the registry and is the security
+council on the reputation record. The full record is in
 [`deployments/arc-mainnet.json`](deployments/arc-mainnet.json).
 
 Check that the code in this repo is the code running on mainnet:
@@ -38,6 +42,7 @@ Check that the code in this repo is the code running on mainnet:
 ```bash
 bash script/verify-mainnet.sh
 # OK   KarwanBusinessRegistry at 0x69eA60B6EFd13A126Eb00d25aB0f21A4AfC636eF (2206 bytes)
+# OK   KarwanReputation at 0xa8E41F941b44CA091E3Ab7b600fe1484838aE27D (6215 bytes)
 ```
 
 The script builds with the settings the contract was deployed with (the
@@ -97,7 +102,85 @@ permanent and public.
 
 ---
 
-## 2. Assignable payouts
+## 2. Reputation record
+
+The problem: a seller's five-star history lives in the marketplace that
+collected it. Move to another platform and it is gone, and inside the platform
+nobody outside can check how the stars were earned. A score that one company
+can edit, and that ten deals with a friend can inflate, is not something a
+stranger or a financier should price against.
+
+`KarwanReputation` keeps the outcomes on chain, where any app can read them,
+and lets only the contract that held the money write them.
+
+```solidity
+// owner, once: name the escrow (or escrows) allowed to write
+reputation.setEscrow(address(escrow));
+reputation.setRecorder(address(escrowV2), true);
+
+// escrow, when a deal closes (dealAmount in 6-decimal USDC)
+reputation.recordCompletion(dealId, buyer, seller, KarwanReputation.Outcome.Success, 500e6);
+
+// escrow, when an arbiter splits the money: it passes the split, the record bands it
+reputation.recordResolution(dealId, buyer, seller, 2500, 500e6);   // 25% to seller -> DisputeResolved
+
+// anyone
+(uint256 ok, uint256 disputed, uint256 failed) = reputation.scores(seller);
+reputation.settledValue(seller);              // USDC value of creditable settled deals
+reputation.distinctCounterparties(seller);    // how many different people they have settled with
+reputation.pairDealCount(buyer, seller);      // how many times these two have dealt
+```
+
+What you get:
+
+- **Only the money can write.** `recordCompletion` and `recordResolution`
+  revert with `NotEscrow` for anyone but the wired escrow or an approved
+  recorder. A party cannot vouch for themselves. The owner decides who the
+  recorders are, so put it behind a multisig or timelock; every change emits
+  `EscrowSet` or `RecorderSet`, so anyone watching sees a new writer appear.
+- **One deal, one record.** Each deal id records once (`AlreadyRecorded`), so
+  a retried settlement cannot double anyone's history.
+- **Both sides carry the result.** A good deal credits buyer and seller alike.
+  When the seller fails to deliver, the buyer is credited for paying in good
+  faith and the seller takes the failure.
+- **Arbiter splits are banded, not trusted as labels.** The escrow passes the
+  seller's share in basis points. 80% or more to the seller counts as Success,
+  20% or less as Failed, anything between as DisputeResolved.
+- **Volume with one friend does not look like a market.**
+  `distinctCounterparties` rises once per new pair, and only for a deal of at
+  least `minCreditAmount` (25 USDC by default) that did not fail. Dust deals and
+  throwaway counterparties still count as deals but add no breadth and no
+  settled value. `pairDealCount` lets a scorer give each repeat deal with the
+  same partner less weight.
+  [`KarwanReputationFarmingAttack.t.sol`](test/KarwanReputationFarmingAttack.t.sol)
+  and [`KarwanReputationDiversity.t.sol`](test/KarwanReputationDiversity.t.sol)
+  cover the farming cases.
+- **Escrow upgrades without losing history.** The owner repoints `escrow` or
+  adds recorders, so deals on an old escrow settle into the same record as
+  deals on a new one.
+- **Penalties that can be reversed.** A one-shot security signer records a
+  penalty with a reason hash. A separate security council can annul it, once,
+  with the reversal on chain beside the original.
+- **A financier record next to the trade record.** A one-shot finance signer
+  records whether each funding was repaid or defaulted, per financier.
+- **A migration door that closes.** The owner can seed history from an older
+  record with `backfill` and `backfillDiversity` until `lockBackfill` is
+  called. On mainnet it is already locked, so history can no longer be seeded
+  directly; new entries can only come through a recorder.
+
+What it does not do: turn the counts into a score. The contract stores raw
+outcomes, value and breadth. How much a dispute costs, how fast old deals
+decay, and what counts as trustworthy are the reader's call, made off chain
+where they can change. `getReputationScore` is a simple success ratio kept for
+older readers, not a recommendation.
+
+On mainnet the record is deployed and owned by the Safe, but no escrow is wired
+to it yet, so it holds no outcomes. Fork it, point `setEscrow` at your own
+escrow, and it records yours.
+
+---
+
+## 3. Assignable payouts
 
 The problem: a financier advances a supplier cash against a deal that has not
 settled yet. When it does settle, the money lands in the supplier's wallet, and
@@ -169,7 +252,7 @@ a product.
 
 ---
 
-## 3. USYC yield vault
+## 4. USYC yield vault
 
 [USYC](https://developers.circle.com/tokenized/usyc) is a tokenised T-bill fund.
 Holding your idle float in it instead of raw USDC is close to free yield. Two
@@ -234,15 +317,17 @@ if the float is large.
 
 Karwan lets your reputation travel with you, and lets your agent use that
 reputation to find, negotiate with, and transact with the right people. The
-order matters: verify first, then protect the payment, then let financing
-follow the record. A verified business with completed deals is one a
-financier can price, and `AssignablePayouts` is how that financing gets repaid
-out of the escrow rather than out of trust.
+order matters: verify first, then protect the payment, record how it ended,
+and let financing follow the record. A verified business with completed deals
+across many counterparties is one a financier can price, and
+`AssignablePayouts` is how that financing gets repaid out of the escrow rather
+than out of trust.
 
 ## What is deliberately not here
 
-The product these came from. No matching, no agents, no reputation scoring, no
-disputes, no milestones, no fee logic, no frontend. Those are opinions about a
+The product these came from. No matching, no agents, no scoring formula on top
+of the reputation record, no disputes, no milestones, no fee logic, no
+frontend. Those are opinions about a
 business. These files are not.
 
 ## License
